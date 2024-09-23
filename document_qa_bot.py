@@ -1,0 +1,122 @@
+import gradio as gr
+from langchain.document_loaders import UnstructuredMarkdownLoader
+from langchain.text_splitter import MarkdownHeaderTextSplitter, CharacterTextSplitter
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain.chat_models import ChatOpenAI
+from ollama_wrapper import OllamaChatWrapper
+import tempfile
+import os
+from langchain.schema import Document
+
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0, api_key="YOUR-OPENAI—KEY")
+ollama_chat = OllamaChatWrapper(base_url="http://localhost:11434", model_name="Llama-3-ELYZA-JP-8B:latest")
+
+conversation_history = []
+retriever = None
+qa_chain = None
+
+def process_uploaded_file(file):
+    global retriever, qa_chain
+    
+    if file is None:
+        return "ファイルがアップロードされていません。"
+    
+    file_path = file.name
+    if not os.path.exists(file_path):
+        return f"ファイルが見つかりません：{file_path}"
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        file_content = f.read()
+    
+    
+    documents = [Document(page_content=file_content)]
+    
+    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    docs = text_splitter.split_documents(documents)
+    
+    print(f"分割後のチャンク数：{len(docs)}")
+    
+    vectorstore = FAISS.from_documents(docs, embeddings)
+    retriever = vectorstore.as_retriever()
+    
+    qa_chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
+    
+    return f"ドキュメントは {len(docs)} 個のチャンクに分割されました。"
+
+def answer_question(question, use_online):
+    global conversation_history, retriever, qa_chain
+    
+    if retriever is None:
+        return "ファイルをアップロードしてください。", "", ""
+    
+    retrieved_docs = retriever.get_relevant_documents(question)
+    context_text = "\n".join([doc.page_content for doc in retrieved_docs])
+    
+    history_text = "\n".join([f"Human: {q}\nAI: {a}" for q, a in conversation_history[-3:]])
+    
+    if use_online:
+        prompt = f"Conversation history:\n{history_text}\n\nContext: {context_text}\n\nHuman: {question}\nAI:"
+        answer = qa_chain.run(prompt)
+    else:
+        prompt = f"Conversation history:\n{history_text}\n\nContext: {context_text}\n\nHuman: {question}\nAI:"
+        answer = ollama_chat.generate(prompt)
+    
+    conversation_history.append((question, answer))
+    if len(conversation_history) > 10:
+        conversation_history.pop(0)
+
+    retrieved_chunks = "\n\n".join([f"Chunk {i+1}:\n{doc.page_content[:200]}..." for i, doc in enumerate(retrieved_docs)])
+    
+    return answer, retrieved_chunks, format_history()
+
+def format_history():
+    return "\n\n".join([f"Human: {q}\nAI: {a}" for q, a in conversation_history])
+
+def create_interface():
+    with gr.Blocks(css="""
+    body {
+        background-color: #f0f2f5;
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+    .gr-button {
+        padding: 10px 20px;
+        font-size: 14px;
+        background-color: #f57c00;
+        color: white;
+        border-radius: 5px;
+    }
+    """) as iface:
+        gr.Markdown("# 📄 **DocumentQABot**")
+        gr.Markdown("📁 **ファイルをアップロードして会話しましょう！💬**")
+        
+        with gr.Row():
+            file_upload = gr.File(label="📄 **Markdownファイルをアップロード**")
+        
+        with gr.Row():
+            process_btn = gr.Button("📥 **ファイルを処理**")
+            process_output = gr.Textbox(label="✅ **処理結果**", scale=2)
+
+        with gr.Row():
+            with gr.Column(scale=2):
+                question_input = gr.Textbox(lines=2, placeholder="❓ **問題を入力してください**")
+                use_online = gr.Checkbox(label="🌐 **オンラインモデルを使用する (gpt-4o-mini)**", value=True)
+                submit_btn = gr.Button("🚀 **問題を送信**")
+                answer_output = gr.Textbox(lines=10, label="📝 **回答**")
+            
+            with gr.Column(scale=1):
+                history_output = gr.Textbox(lines=20, label="📚 **対話履歴**", value="")
+        
+        retrieved_chunks_output = gr.Textbox(lines=5, label="🔍 **検索されたChunks**")
+        
+        process_btn.click(fn=process_uploaded_file, inputs=[file_upload], outputs=[process_output])
+        submit_btn.click(fn=answer_question, inputs=[question_input, use_online], outputs=[answer_output, retrieved_chunks_output, history_output])
+
+
+    return iface
+
+if __name__ == "__main__":
+    iface = create_interface()
+    iface.launch(share=True)
