@@ -9,13 +9,6 @@ The Document QA Bot is a conversational AI application that allows users to uplo
 - Choose between online and offline models for generating answers.
 - View conversation history and retrieved document chunks.
 
-## Requirements
-- Python 3.x
-- Gradio
-- Langchain
-- Ollama Wrapper
-- Hugging Face Transformers
-
 ## Installation
 1. Clone the repository:
    ```bash
@@ -46,6 +39,3 @@ The Document QA Bot is a conversational AI application that allows users to uplo
 
 ## Contributing
 Contributions are welcome! Please submit a pull request or open an issue for any enhancements or bug fixes.
-
-## License
-This project is licensed under the MIT License. See the LICENSE file for details.
