@@ -22,9 +22,9 @@ Key features include:
 2. **Q&A Functionality**:
    - Users input questions, and the system generates answers based on the document content and context.
    - Two modes are available for generating answers:
-     - **Online Mode**: Using `ChatOpenAI` and the `gpt-4o-mini` model.
-     - **Local Mode**: Using the custom Ollama model (e.g., `Llama-3-ELYZA-JP-8B`).
-   - The system retrieves relevant document chunks to provide context for answering questions.
+     - **Online Mode**: Using `ChatOpenAI` and the `gpt-4o-mini` model for cloud-based processing.
+     - **Local Mode**: Using the custom Ollama model (e.g., `Llama-3-ELYZA-JP-8B`), which allows the system to operate offline and ensures that sensitive data is processed securely within the local environment.
+   - This flexible switching between online and local models gives users the option to handle sensitive data securely when required by utilizing the local model while still leveraging the power of cloud-based models for general use.
 
 3. **Vector Store**:
    - The document content is embedded using `HuggingFace`'s `sentence-transformers/all-MiniLM-L6-v2` model and stored in a `FAISS` vector store for efficient retrieval.
