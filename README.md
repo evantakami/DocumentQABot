@@ -55,8 +55,8 @@ Key features include:
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
-   cd <repository-directory>
+   git clone <https://github.com/Evantakami/DocumentQABot/>
+   cd <DocumentQABot>
    ```
 
 2. Install the required packages:
