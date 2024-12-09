@@ -1,27 +1,20 @@
 import gradio as gr
-from langchain.text_splitter import MarkdownHeaderTextSplitter
+from langchain.text_splitter import MarkdownTextSplitter
 from langchain.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.schema import Document
+from ollama_wrapper import OllamaChatWrapper
+
 OLLAMA_HOST = "localhost"
 OLLAMA_PORT = 11434
 MODEL_NAME = 'elyza:jp8b'  # 指定されたモデル名
-from langchain.text_splitter import MarkdownTextSplitter
-from ollama_wrapper import OllamaChatWrapper
-ollama_chat = OllamaChatWrapper(f"http://{OLLAMA_HOST}:{OLLAMA_PORT}", MODEL_NAME)
 
-import gradio as gr
-from langchain.text_splitter import MarkdownTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.chat_models import ChatOpenAI
-import tempfile
-import os
-import requests
-from langchain.schema import Document
-import json
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0, api_key="")
 ollama_chat = OllamaChatWrapper(base_url="http://localhost:11434", model_name="elyza:jp8b")
+
 #Ragas(rag評価マトリックス)の導入
 #Rerank Modelの導入
 conversation_history = []
