@@ -125,3 +125,205 @@ if __name__ == "__main__":
     iface = create_interface()
     iface.launch(share=True)
 
+import os
+import logging
+import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import tiktoken  # 用于 token 计数
+
+# LangChain のインポート（langchain パッケージがインストールされていることを確認してください）
+from langchain.chat_models import AzureChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+
+# --- Token 数を計算する関数 ---
+def count_tokens(text, model="gpt-3.5-turbo"):
+    """
+    指定したテキストの token 数を返します。
+    """
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
+    return len(enc.encode(text))
+
+# 1. データの読み込み: チェックリスト CSV と事前検証 MD ファイルを読み込みます
+csv_file = "checklist.csv"
+md_file = "事前検証.md"
+
+# ログの設定: INFO レベル以上のログをファイルに記録し、日本語が文字化けしないようにします
+logging.basicConfig(filename="process.log", level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s", encoding="utf-8")
+logging.info("データの読み込みを開始します")
+
+# チェックリスト CSV を読み込みます（UTF-8 エンコードで読み込みを試みます）
+try:
+    df = pd.read_csv(csv_file, encoding="utf-8-sig")  # utf-8-sig を使用して BOM をサポート
+except Exception as e:
+    logging.error(f"CSV ファイルの読み込みに失敗しました: {e}")
+    raise
+
+# Markdown ドキュメントの内容を読み込みます
+try:
+    with open(md_file, "r", encoding="utf-8") as f:
+        doc_text = f.read()
+except Exception as e:
+    logging.error(f"Markdown ファイルの読み込みに失敗しました: {e}")
+    raise
+
+logging.info(f"チェック項目の数: {len(df)}")
+logging.info("データの読み込みが完了しました")
+
+# 2. Azure OpenAI の設定: API 認証情報とモデルデプロイメント名を設定します
+# 実際の Azure OpenAI 設定に従って以下の変数を記入してください
+api_key = "YOUR_AZURE_OPENAI_API_KEY"
+api_base = "https://YOUR_RESOURCE_NAME.openai.azure.com/"  # Azure OpenAI リソースのエンドポイント
+api_version = "2023-05-15"  # API バージョン（必要に応じて調整してください）
+deployment_name = "YOUR_DEPLOYMENT_NAME"  # モデルのデプロイメント名（例: Azure にデプロイした GPT-4 または GPT-3.5 のモデル名）
+
+# 認証情報を環境変数に設定します（LangChain はデフォルトで環境変数から読み込みます）
+os.environ["OPENAI_API_TYPE"] = "azure"
+os.environ["OPENAI_API_KEY"] = api_key
+os.environ["OPENAI_API_BASE"] = api_base
+os.environ["OPENAI_API_VERSION"] = api_version
+
+# AzureChatOpenAI オブジェクトを初期化します
+try:
+    llm = AzureChatOpenAI(deployment_name=deployment_name,
+                          openai_api_base=api_base,
+                          openai_api_version=api_version,
+                          openai_api_key=api_key,
+                          openai_api_type="azure",
+                          temperature=0)
+    logging.info("Azure OpenAI LLM の初期化に成功しました")
+except Exception as e:
+    logging.error(f"Azure OpenAI の初期化に失敗しました: {e}")
+    raise
+
+# 3. 多段階検査に必要なプロンプトテンプレートとパーサーを定義します
+
+# ステージ1プロンプトテンプレート：チェック項目と文書全体に基づいて、AI評価のコメントを生成します
+template_stage1 = """あなたは手順書の事前検証をチェックする高度なAIアシスタントです。
+以下のチェック項目と文書内容に基づいて、その項目に関するAI評価のコメントを日本語で述べてください。
+チェック項目: {check_item}
+文書内容: \"\"\"{document}\"\"\"
+AI評価のコメント:"""
+prompt_stage1 = PromptTemplate(
+    input_variables=["check_item", "document"],
+    template=template_stage1
+)
+
+# ステージ2の出力パーサー: JSON 形式で「AI評価」と「改善案」を出力する構造を定義します
+response_schemas = [
+    ResponseSchema(name="AI評価", description="評価結果。OK、NG、または「-」のいずれか。"),
+    ResponseSchema(name="改善案", description="評価がNGの場合、項目を満たすための改善提案。OKや「-」の場合は空文字。")
+]
+output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
+format_instructions = output_parser.get_format_instructions()
+
+# ステージ2プロンプトテンプレート：ステージ1のコメントに基づき、構造化された評価結果と改善案を出力します
+template_stage2 = """あなたはチェック結果を判定するアシスタントです。
+以下のAI評価コメントに基づき、チェック項目の最終評価と改善案を決定してください。
+評価は「OK」「NG」または「-」で表し、NGの場合は改善案も提案してください。
+{format_instructions}
+AI評価コメント: {ai_comment}"""
+prompt_stage2 = PromptTemplate(
+    input_variables=["ai_comment"],
+    partial_variables={"format_instructions": format_instructions},
+    template=template_stage2
+)
+
+# 4. 各チェック項目に対して、AI評価のコメント生成と結果判定を実行します。LLM を二段階で呼び出します。
+def process_check_item(item):
+    """
+    各チェック項目に対して、二段階でLLMを呼び出し、
+    「AI評価のコメント」と「AI評価」および「改善案」を生成し、さらに Token 消費数も計算して返します。
+    """
+    item_no = item.get("項番", "<no-id>")
+    content = str(item.get("確認内容", ""))
+    
+    # --- ステージ1: AI評価のコメント生成 ---
+    try:
+        comment_prompt = prompt_stage1.format(check_item=content, document=doc_text)
+        ai_comment = llm([{"role": "user", "content": comment_prompt}]).content
+        logging.info(f"項番 {item_no}: ステージ1のコメント生成が完了しました")
+        # ステージ1の token 数を計算
+        tokens_prompt1 = count_tokens(comment_prompt)
+        tokens_response1 = count_tokens(ai_comment)
+    except Exception as e:
+        logging.error(f"項番 {item_no}: ステージ1のコメント生成に失敗しました: {e}")
+        return {
+            "項番": item_no,
+            "AI評価のコメント": f"エラー: {e}",
+            "AI評価": "-",
+            "改善案": "",
+            "Token消費": f"エラー: {e}"
+        }
+    
+    # --- ステージ2: 評価結果と改善案の生成 ---
+    try:
+        result_prompt = prompt_stage2.format(ai_comment=ai_comment)
+        raw_output = llm([{"role": "user", "content": result_prompt}]).content
+        result = output_parser.parse(raw_output)
+        ai_hyouka = result.get("AI評価", "")
+        kaizen = result.get("改善案", "")
+        logging.info(f"項番 {item_no}: ステージ2の評価生成が完了しました (評価: {ai_hyouka})")
+        # ステージ2の token 数を計算
+        tokens_prompt2 = count_tokens(result_prompt)
+        tokens_response2 = count_tokens(raw_output)
+    except Exception as e:
+        logging.error(f"項番 {item_no}: ステージ2の評価生成または解析に失敗しました: {e}")
+        ai_hyouka = "-"
+        kaizen = f"エラー: {e}"
+        tokens_prompt2 = 0
+        tokens_response2 = 0
+    
+    # Token 消費の合計を計算
+    total_tokens = tokens_prompt1 + tokens_response1 + tokens_prompt2 + tokens_response2
+    token_info = (f"Stage1: prompt {tokens_prompt1}, response {tokens_response1}; "
+                  f"Stage2: prompt {tokens_prompt2}, response {tokens_response2}; "
+                  f"合計: {total_tokens}")
+    
+    # 結果を返す
+    return {
+        "項番": item_no,
+        "AI評価のコメント": ai_comment,
+        "AI評価": ai_hyouka,
+        "改善案": kaizen,
+        "Token消費": token_info
+    }
+
+# 5. すべてのチェック項目を並列処理します
+logging.info("チェック項目の並列処理を開始します")
+items = df.to_dict(orient="records")
+results = []
+
+with ThreadPoolExecutor() as executor:
+    futures = [executor.submit(process_check_item, item) for item in items]
+    for future in as_completed(futures):
+        result = future.result()
+        results.append(result)
+
+logging.info("すべてのチェック項目の処理が完了しました")
+
+result_df = pd.DataFrame(results)
+try:
+    result_df["項番"] = result_df["項番"].astype(int)
+except:
+    pass
+if "項番" in df.columns:
+    result_df = result_df.set_index("項番").loc[df["項番"]].reset_index()
+
+# 6. 結果を元の DataFrame に統合し、Excel ファイルに出力します
+for col in ["AI評価のコメント", "AI評価", "改善案", "Token消費"]:
+    df[col] = df["項番"].map(result_df.set_index("項番")[col])
+
+output_file = "checklist.xlsx"
+try:
+    df.to_excel(output_file, index=False, encoding="utf-8")
+    logging.info(f"結果は {output_file} に保存されました")
+except Exception as e:
+    logging.error(f"Excel の保存中にエラーが発生しました: {e}")
+    raise
+
+print("検査が完了しました。結果は", output_file, "に保存されました")
