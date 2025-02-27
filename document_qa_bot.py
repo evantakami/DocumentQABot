@@ -135,6 +135,7 @@ import tiktoken  # 用于 token 计数
 from langchain.chat_models import AzureChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.schema import HumanMessage
 
 # --- Token 数を計算する関数 ---
 def count_tokens(text, model="gpt-3.5-turbo"):
@@ -245,7 +246,7 @@ def process_check_item(item):
     # --- ステージ1: AI評価のコメント生成 ---
     try:
         comment_prompt = prompt_stage1.format(check_item=content, document=doc_text)
-        ai_comment = llm([{"role": "user", "content": comment_prompt}]).content
+        ai_comment = llm([HumanMessage(content=comment_prompt)]).content
         logging.info(f"項番 {item_no}: ステージ1のコメント生成が完了しました")
         # ステージ1の token 数を計算
         tokens_prompt1 = count_tokens(comment_prompt)
@@ -263,7 +264,7 @@ def process_check_item(item):
     # --- ステージ2: 評価結果と改善案の生成 ---
     try:
         result_prompt = prompt_stage2.format(ai_comment=ai_comment)
-        raw_output = llm([{"role": "user", "content": result_prompt}]).content
+        raw_output = llm([HumanMessage(content=result_prompt)]).content
         result = output_parser.parse(raw_output)
         ai_hyouka = result.get("AI評価", "")
         kaizen = result.get("改善案", "")
