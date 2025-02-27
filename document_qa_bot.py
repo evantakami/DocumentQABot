@@ -126,34 +126,71 @@ if __name__ == "__main__":
     iface.launch(share=True)
 
 
-def parse_bullets(text):
+import re
+import pandas as pd
+
+def parse_bullets_with_header(text):
+
     if not isinstance(text, str):
-        return []
-    parts = re.split(r'(?=[○□])', text.strip())
+        return "", []
+    
+    text = text.strip()
+    
+
+    bullet_pattern = r'[○□]'
+    match = re.search(bullet_pattern, text)
+    
+    if not match:
+
+        return text, []
+    
+
+    header = text[:match.start()].strip()
+    
+
+    bullet_text = text[match.start():]
+    
+
+    parts = re.split(r'(?=[○□])', bullet_text)
     parts = [p.strip() for p in parts if p.strip()]
-    return parts
+    
+    return header, parts
 
 def row_to_markdown(row):
+
+
     item_no = row['項番']
     summary = row['作業概要']
     environment = row['作業対象/環境等']
+    
 
-    implement_list = parse_bullets(row['実施内容'])
-    confirm_list = parse_bullets(row['確認内容'])
+    imp_header, imp_list = parse_bullets_with_header(row['実施内容'])
+    conf_header, conf_list = parse_bullets_with_header(row['確認内容'])
+    
 
     md = []
     md.append(f"## 項番: {item_no}\n")
     md.append(f"**作業概要**: {summary}\n")
     md.append(f"**作業対象/環境等**: {environment}\n")
+    
+ 
+    if imp_header:
+        md.append(f"**実施内容（説明）**: {imp_header}\n")
 
-    for i, (imp, conf) in enumerate(zip(implement_list, confirm_list), start=1):
+    if conf_header:
+        md.append(f"**確認内容（説明）**: {conf_header}\n")
+    
+    for i, (imp, conf) in enumerate(zip(imp_list, conf_list), start=1):
         md.append(f"{i}. **実施内容**: {imp}")
         md.append(f"   - **確認内容**: {conf}")
     
     return "\n".join(md)
 
-markdown_results = df.apply(row_to_markdown, axis=1)
 
+
+
+
+markdown_results = df.apply(row_to_markdown, axis=1)
 final_markdown = "\n\n".join(markdown_results)
 
-print(final_markdown)
+
