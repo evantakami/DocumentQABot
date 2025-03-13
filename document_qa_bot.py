@@ -124,7 +124,6 @@ def create_interface():
 if __name__ == "__main__":
     iface = create_interface()
     iface.launch(share=True)
-
 import os
 import logging
 import pandas as pd
@@ -300,8 +299,10 @@ def process_check_item(item, doc_text, llm_instance, selected_model):
         "total_tokens": total_tokens
     }
 
-# 【修改】更新 process_uploaded_file 函数，增加 selected_types, selected_model, llm_instance 参数
-# 并在读取 CSV 后根据 UI 勾选的种别进行过滤
+# 【修改】更新 process_uploaded_file 函数，增加 selected_types, selected_model, llm_instance 参数  
+# 并且：  
+# 1. 读取 CSV 后不再过滤，而是在处理时判断是否符合 UI 勾选  
+# 2. 输出到 Excel 时，按照 CSV 行号（第一行对应 Excel 第10行，第二行对应 Excel 第11行……）写入结果，未处理项在 AI評価のコメント 中写入“チェック対象外”
 def process_uploaded_file(uploaded_excel_file, selected_types, selected_model, llm_instance):
     try:
         # 保存上传的 Excel 文件
@@ -329,18 +330,16 @@ def process_uploaded_file(uploaded_excel_file, selected_types, selected_model, l
         if not os.path.exists(md_folder):
             return "Markdownファイルへの変換に失敗しました。フォルダが存在しません。", None
 
-        # 读取检查项列表
+        # 【修改】读取 CSV，保持全部行，保证输出 Excel 时行号对应
         csv_file = "check_list.csv"
         df = pd.read_csv(csv_file, encoding="utf-8-sig")
         items = df.to_dict(orient="records")
-        # 【修改】如果 UI 中选择了种别，则过滤掉不在所选种别中的项
-        if selected_types:
-            items = [item for item in items if item.get("種別", "") in selected_types]
 
         md_files = [f for f in os.listdir(md_folder) if f.lower().endswith(".md")]
         if not md_files:
             return "変換後のフォルダにMarkdownファイルがありません。", None
 
+        # 为每个 md 文件生成结果，这里假设每个 md 文件生成一份结果（如果有多个，可根据需求合并）
         results_dict = {}
         cost_summary = {}
         for md_filename in md_files:
@@ -351,12 +350,25 @@ def process_uploaded_file(uploaded_excel_file, selected_types, selected_model, l
             file_results = []
             total_input_tokens = 0
             total_output_tokens = 0
+            # 【修改】按 CSV 顺序处理每个检查项
             for item in items:
-                result = process_check_item(item, doc_text, llm_instance, selected_model)
+                # 如果 UI 中选择了种别，且当前项的种别不在所选列表中，则直接标记为“チェック対象外”
+                if selected_types and item.get("種別", "") not in selected_types:
+                    result = {
+                        "項番": item.get("項番", ""),
+                        "AI評価のコメント": "チェック対象外",
+                        "AI評価": "",
+                        "改善案": "",
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0
+                    }
+                else:
+                    result = process_check_item(item, doc_text, llm_instance, selected_model)
                 file_results.append(result)
                 total_input_tokens += result.get("input_tokens", 0)
                 total_output_tokens += result.get("output_tokens", 0)
-                time.sleep(2)  # API调用间隔，防止请求过于频繁
+                time.sleep(2)  # API调用间隔
 
             results_dict[md_filename] = file_results
 
@@ -366,25 +378,50 @@ def process_uploaded_file(uploaded_excel_file, selected_types, selected_model, l
             total_cost = cost_input + cost_output
             cost_summary[md_filename] = (total_input_tokens, total_output_tokens, total_cost)
 
-        # 使用模板 Excel 写入结果
-        template_excel = "F-0168-2.xlsx"
-        wb = openpyxl.load_workbook(template_excel)
-        template_sheet_name = "商用作業手順書チェックリスト"
-        if template_sheet_name not in wb.sheetnames:
-            return f"テンプレートシート[{template_sheet_name}]が存在しません。", None
-        template_sheet = wb[template_sheet_name]
+            # 【修改】将结果写入 Excel 模板  
+            template_excel = "F-0168-2.xlsx"
+            wb = openpyxl.load_workbook(template_excel)
+            template_sheet_name = "商用作業手順書チェックリスト"
+            if template_sheet_name not in wb.sheetnames:
+                return f"テンプレートシート[{template_sheet_name}]が存在しません。", None
+            template_sheet = wb[template_sheet_name]
 
-        data_font = Font(name="Meiryo UI", size=10, bold=False)
-        data_alignment = Alignment(horizontal="left", vertical="bottom")
-        data_fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
-        fields = ["AI評価のコメント", "AI評価", "改善案"]
-        start_row = 10
-        start_col = 11
+            data_font = Font(name="Meiryo UI", size=10, bold=False)
+            data_alignment = Alignment(horizontal="left", vertical="bottom")
+            data_fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
+            fields = ["AI評価のコメント", "AI評価", "改善案"]
+            start_row = 10  # CSV第一行对应 Excel 第10行
+            start_col = 11  # 从第11列开始写入
 
-        # 这里省略写入 Excel 的具体代码，可按原有逻辑处理
+            # 遍历 file_results，与 CSV 行对应
+            for idx, result in enumerate(file_results):
+                excel_row = start_row + idx
+                # 写入 AI評価のコメント
+                cell = template_sheet.cell(row=excel_row, column=start_col)
+                cell.value = result.get("AI評価のコメント", "")
+                cell.font = data_font
+                cell.alignment = data_alignment
+                cell.fill = data_fill
 
-        output_excel = f"チェック結果_{os.path.splitext(file_name)[0]}.xlsx"
-        wb.save(output_excel)
+                # 写入 AI評価（假设在 start_col+1 列）
+                cell = template_sheet.cell(row=excel_row, column=start_col+1)
+                cell.value = result.get("AI評価", "")
+                cell.font = data_font
+                cell.alignment = data_alignment
+                cell.fill = data_fill
+
+                # 写入 改善案（假设在 start_col+2 列）
+                cell = template_sheet.cell(row=excel_row, column=start_col+2)
+                cell.value = result.get("改善案", "")
+                cell.font = data_font
+                cell.alignment = data_alignment
+                cell.fill = data_fill
+
+            # 输出 Excel 文件（此处每个 md 文件生成一个 Excel 文件，可根据需求合并）
+            output_excel = f"チェック結果_{os.path.splitext(file_name)[0]}_{md_filename}.xlsx"
+            wb.save(output_excel)
+            # 这里仅记录第一个 md 文件的 cost_summary 用于展示
+            break
 
         summary = "チェックが完了しました。\n"
         summary += f"Markdownファイル格納フォルダ: {md_folder}\n"
@@ -432,7 +469,7 @@ with gr.Blocks() as demo:
     with gr.Row():
         # 【修改】新增模型选择控件
         model_selection = gr.Radio(choices=["GPT3.5", "4omini"], label="モデル選択", value="4omini")
-        # 【修改】新增种别过滤控件
+        # 【修改】新增种别过滤控件（空选表示全部）
         selected_types = gr.CheckboxGroup(choices=types_options, label="チェック項目の種別選択 (空欄なら全て対象)")
     with gr.Row():
         run_btn = gr.Button("処理開始")
@@ -444,3 +481,4 @@ with gr.Blocks() as demo:
     run_btn.click(fn=run_interface, inputs=[input_file, model_selection, selected_types], outputs=[output_message, output_file])
 
 demo.launch()
+
