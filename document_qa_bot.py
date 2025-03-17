@@ -124,3 +124,74 @@ def create_interface():
 if __name__ == "__main__":
     iface = create_interface()
     iface.launch(share=True)
+    
+def process_excel_like_data(df):
+    """
+    针对一个无表头的 DataFrame：
+      1. 查找包含「項番」和「作業概要」的表头行；
+      2. 前向填充该行作为新列名，并取其下方数据；
+      3. 删除「項番」与「作業概要」之间原始表头为空的列；
+      4. 将同一大标题下的多列合并为单列；
+      5. 以「項番」向下填充后按項番分组合并多行；
+    返回整理好的 DataFrame。
+    """
+    hdr_row = find_header_row(df, keywords=("項番", "作業概要"), max_search=10)
+    if hdr_row is None:
+        print("在前 10 行内未找到同时包含『項番』『作業概要』的行，无法继续。")
+        return None
+
+    # 取出原始表头（不做填充），用于判断哪些列原本为空
+    original_header = df.iloc[hdr_row]
+    # 前向填充，用于后续作为列名
+    ffilled_header = original_header.ffill()
+    df_data = df.iloc[hdr_row+1:].copy()
+    df_data.columns = ffilled_header
+
+    # 新增：删除「項番」和「作業概要」之间原始表头为空的列
+    start_index = None
+    end_index = None
+    # 遍历 ffill 后的表头，找到「項番」和「作業概要」的位置
+    for i, col in enumerate(ffilled_header):
+        if col == "項番" and start_index is None:
+            start_index = i
+        if col == "作業概要" and start_index is not None and end_index is None:
+            end_index = i
+    # 如果找到了两个位置，并且二者之间有列
+    if start_index is not None and end_index is not None and end_index > start_index:
+        indices_to_drop = []
+        # 遍历这两个位置之间的原始表头
+        for i in range(start_index+1, end_index):
+            orig_val = original_header.iloc[i]
+            # 如果原始表头为空（或仅为空白字符串），则记录该列索引
+            if pd.isna(orig_val) or str(orig_val).strip() == "":
+                indices_to_drop.append(i)
+        # 按列索引删除这些列（注意：删除操作不会影响其他部分的列）
+        df_data.drop(df_data.columns[indices_to_drop], axis=1, inplace=True)
+
+    # 以下代码保持原有逻辑，对同一大标题下的多列进行合并
+    unique_titles = []
+    for col in df_data.columns:
+        if col not in unique_titles:
+            unique_titles.append(col)
+
+    title_to_indices = {}
+    col_list = list(df_data.columns)
+    for i, t in enumerate(col_list):
+        title_to_indices.setdefault(t, []).append(i)
+
+    merged_dict = {}
+    for t in unique_titles:
+        indices = title_to_indices[t]
+        merged_dict[t] = df_data.apply(lambda row: merge_columns_in_row(row, indices, t), axis=1)
+    df_merged_cols = pd.DataFrame(merged_dict)
+
+    if "項番" not in df_merged_cols.columns:
+        print("合并后未发现「項番」列，无法进行行合并。")
+        return df_merged_cols
+
+    df_merged_cols["項番"] = df_merged_cols["項番"].ffill()
+    df_final = df_merged_cols.groupby("項番", as_index=False).apply(merge_rows_in_group)
+    df_final.reset_index(drop=True, inplace=True)
+
+    return df_final
+
