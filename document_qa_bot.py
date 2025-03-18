@@ -125,73 +125,84 @@ if __name__ == "__main__":
     iface = create_interface()
     iface.launch(share=True)
     
-def process_excel_like_data(df):
-    """
-    针对一个无表头的 DataFrame：
-      1. 查找包含「項番」和「作業概要」的表头行；
-      2. 前向填充该行作为新列名，并取其下方数据；
-      3. 删除「項番」与「作業概要」之间原始表头为空的列；
-      4. 将同一大标题下的多列合并为单列；
-      5. 以「項番」向下填充后按項番分组合并多行；
-    返回整理好的 DataFrame。
-    """
-    hdr_row = find_header_row(df, keywords=("項番", "作業概要"), max_search=10)
-    if hdr_row is None:
-        print("在前 10 行内未找到同时包含『項番』『作業概要』的行，无法继续。")
-        return None
 
-    # 取出原始表头（不做填充），用于判断哪些列原本为空
-    original_header = df.iloc[hdr_row]
-    # 前向填充，用于后续作为列名
-    ffilled_header = original_header.ffill()
-    df_data = df.iloc[hdr_row+1:].copy()
-    df_data.columns = ffilled_header
+# 【修改】新增一个函数，用于批量处理多个 xlsx 文件
+def process_uploaded_files(uploaded_excel_files, selected_types, selected_model, llm_instance):
 
-    # 新增：删除「項番」和「作業概要」之间原始表头为空的列
-    start_index = None
-    end_index = None
-    # 遍历 ffill 后的表头，找到「項番」和「作業概要」的位置
-    for i, col in enumerate(ffilled_header):
-        if col == "項番" and start_index is None:
-            start_index = i
-        if col == "作業概要" and start_index is not None and end_index is None:
-            end_index = i
-    # 如果找到了两个位置，并且二者之间有列
-    if start_index is not None and end_index is not None and end_index > start_index:
-        indices_to_drop = []
-        # 遍历这两个位置之间的原始表头
-        for i in range(start_index+1, end_index):
-            orig_val = original_header.iloc[i]
-            # 如果原始表头为空（或仅为空白字符串），则记录该列索引
-            if pd.isna(orig_val) or str(orig_val).strip() == "":
-                indices_to_drop.append(i)
-        # 按列索引删除这些列（注意：删除操作不会影响其他部分的列）
-        df_data.drop(df_data.columns[indices_to_drop], axis=1, inplace=True)
+    all_summaries = []
+    generated_excels = []
 
-    # 以下代码保持原有逻辑，对同一大标题下的多列进行合并
-    unique_titles = []
-    for col in df_data.columns:
-        if col not in unique_titles:
-            unique_titles.append(col)
+    if not isinstance(uploaded_excel_files, list):
+        uploaded_excel_files = [uploaded_excel_files]
 
-    title_to_indices = {}
-    col_list = list(df_data.columns)
-    for i, t in enumerate(col_list):
-        title_to_indices.setdefault(t, []).append(i)
+    for file_data in uploaded_excel_files:
+        summary, excel_path = process_uploaded_file(file_data, selected_types, selected_model, llm_instance)
+        all_summaries.append(summary)
+        if excel_path:
+            generated_excels.append(excel_path)
 
-    merged_dict = {}
-    for t in unique_titles:
-        indices = title_to_indices[t]
-        merged_dict[t] = df_data.apply(lambda row: merge_columns_in_row(row, indices, t), axis=1)
-    df_merged_cols = pd.DataFrame(merged_dict)
+    combined_summary = "\n\n".join(all_summaries)
 
-    if "項番" not in df_merged_cols.columns:
-        print("合并后未发现「項番」列，无法进行行合并。")
-        return df_merged_cols
 
-    df_merged_cols["項番"] = df_merged_cols["項番"].ffill()
-    df_final = df_merged_cols.groupby("項番", as_index=False).apply(merge_rows_in_group)
-    df_final.reset_index(drop=True, inplace=True)
+    if not generated_excels:
+        return combined_summary, None
 
-    return df_final
+    zip_name = "batch_results.zip"
+    with zipfile.ZipFile(zip_name, "w", zipfile.ZIP_DEFLATED) as zf:
+        for excel_file in generated_excels:
+            arcname = os.path.basename(excel_file)
+            zf.write(excel_file, arcname)
+
+    return combined_summary, zip_name
+
+def run_interface(uploaded_excel_files, selected_model, selected_types):
+
+    try:
+        config = MODEL_CONFIG.get(selected_model)
+        if config is None:
+            raise ValueError("選択されたモデルが無効です。")
+
+        llm_instance = AzureChatOpenAI(
+            deployment_name=config["deployment_name"],
+            openai_api_base=os.environ["OPENAI_API_BASE"],
+            openai_api_version=os.environ["OPENAI_API_VERSION"],
+            openai_api_key=os.environ["OPENAI_API_KEY"],
+            temperature=0
+        )
+
+        # 【修改】批量处理文件
+        summary, zip_file = process_uploaded_files(uploaded_excel_files, selected_types, selected_model, llm_instance)
+        return summary, zip_file
+    except Exception as e:
+        return f"全体処理中にエラーが発生しました: {e}", None
+
+# 读取 check_list.csv 中的種別选项，用于 UI 的 CheckboxGroup
+try:
+    df_check = pd.read_csv("check_list.csv", encoding="utf-8-sig")
+    types_options = df_check["種別"].dropna().unique().tolist()
+except Exception as e:
+    logging.error(f"チェックリストの読み込みに失敗しました: {e}")
+    types_options = []
+
+# 【修改】Gradio界面：改为 gr.Files，可以一次上传多个 xlsx
+with gr.Blocks() as demo:
+    gr.Markdown("## AI 手順書チェックツール (複数ファイル対応版)")
+    with gr.Row():
+        # 【修改】这里使用 gr.Files 而不是 gr.File，并允许多文件
+        input_files = gr.Files(label="Excel ファイルをまとめてアップロード", file_types=[".xlsx", ".xlsm"])
+    with gr.Row():
+        model_selection = gr.Radio(choices=["GPT3.5", "4omini"], label="モデル選択", value="4omini")
+        selected_types = gr.CheckboxGroup(choices=types_options, label="チェック項目の種別選択 (空欄なら全て対象)")
+    with gr.Row():
+        run_btn = gr.Button("処理開始")
+    with gr.Row():
+        output_message = gr.Textbox(label="処理情報", interactive=False, lines=15)
+    with gr.Row():
+        # 这里的 file_types=[".zip"] 便于用户下载一个压缩包
+        output_file = gr.File(label="結果の Zip ファイルをダウンロード", file_types=[".zip"])
+    
+    # 注意：Inputs改为 input_files (list)，Outputs保持两个：summary + zip_file
+    run_btn.click(fn=run_interface, inputs=[input_files, model_selection, selected_types], outputs=[output_message, output_file])
+
+demo.launch()
 
