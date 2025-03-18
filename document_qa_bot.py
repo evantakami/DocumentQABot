@@ -126,83 +126,37 @@ if __name__ == "__main__":
     iface.launch(share=True)
     
 
-# 【修改】新增一个函数，用于批量处理多个 xlsx 文件
-def process_uploaded_files(uploaded_excel_files, selected_types, selected_model, llm_instance):
+# 【修改】辅助函数，将JSON格式的数据转换成Excel可用的字符串
+def safe_to_excel(val):
+    if isinstance(val, (dict, list)):
+        try:
+            return json.dumps(val, ensure_ascii=False)
+        except Exception:
+            return str(val)
+    return val
 
-    all_summaries = []
-    generated_excels = []
+            for idx, result in enumerate(file_results):
+                excel_row = start_row + idx
 
-    if not isinstance(uploaded_excel_files, list):
-        uploaded_excel_files = [uploaded_excel_files]
+                ai_comment_val = safe_to_excel(result.get("AI評価のコメント", ""))
+                ai_hyouka_val = safe_to_excel(result.get("AI評価", ""))
+                kaizen_val = safe_to_excel(result.get("改善案", ""))
 
-    for file_data in uploaded_excel_files:
-        summary, excel_path = process_uploaded_file(file_data, selected_types, selected_model, llm_instance)
-        all_summaries.append(summary)
-        if excel_path:
-            generated_excels.append(excel_path)
+                cell = new_sheet.cell(row=excel_row, column=start_col)
+                cell.value = ai_comment_val
+                cell.font = data_font
+                cell.alignment = data_alignment
+                cell.fill = data_fill
 
-    combined_summary = "\n\n".join(all_summaries)
+                cell = new_sheet.cell(row=excel_row, column=start_col + 1)
+                cell.value = ai_hyouka_val
+                cell.font = data_font
+                cell.alignment = data_alignment
+                cell.fill = data_fill
 
-
-    if not generated_excels:
-        return combined_summary, None
-
-    zip_name = "batch_results.zip"
-    with zipfile.ZipFile(zip_name, "w", zipfile.ZIP_DEFLATED) as zf:
-        for excel_file in generated_excels:
-            arcname = os.path.basename(excel_file)
-            zf.write(excel_file, arcname)
-
-    return combined_summary, zip_name
-
-def run_interface(uploaded_excel_files, selected_model, selected_types):
-
-    try:
-        config = MODEL_CONFIG.get(selected_model)
-        if config is None:
-            raise ValueError("選択されたモデルが無効です。")
-
-        llm_instance = AzureChatOpenAI(
-            deployment_name=config["deployment_name"],
-            openai_api_base=os.environ["OPENAI_API_BASE"],
-            openai_api_version=os.environ["OPENAI_API_VERSION"],
-            openai_api_key=os.environ["OPENAI_API_KEY"],
-            temperature=0
-        )
-
-        # 【修改】批量处理文件
-        summary, zip_file = process_uploaded_files(uploaded_excel_files, selected_types, selected_model, llm_instance)
-        return summary, zip_file
-    except Exception as e:
-        return f"全体処理中にエラーが発生しました: {e}", None
-
-# 读取 check_list.csv 中的種別选项，用于 UI 的 CheckboxGroup
-try:
-    df_check = pd.read_csv("check_list.csv", encoding="utf-8-sig")
-    types_options = df_check["種別"].dropna().unique().tolist()
-except Exception as e:
-    logging.error(f"チェックリストの読み込みに失敗しました: {e}")
-    types_options = []
-
-# 【修改】Gradio界面：改为 gr.Files，可以一次上传多个 xlsx
-with gr.Blocks() as demo:
-    gr.Markdown("## AI 手順書チェックツール (複数ファイル対応版)")
-    with gr.Row():
-        # 【修改】这里使用 gr.Files 而不是 gr.File，并允许多文件
-        input_files = gr.Files(label="Excel ファイルをまとめてアップロード", file_types=[".xlsx", ".xlsm"])
-    with gr.Row():
-        model_selection = gr.Radio(choices=["GPT3.5", "4omini"], label="モデル選択", value="4omini")
-        selected_types = gr.CheckboxGroup(choices=types_options, label="チェック項目の種別選択 (空欄なら全て対象)")
-    with gr.Row():
-        run_btn = gr.Button("処理開始")
-    with gr.Row():
-        output_message = gr.Textbox(label="処理情報", interactive=False, lines=15)
-    with gr.Row():
-        # 这里的 file_types=[".zip"] 便于用户下载一个压缩包
-        output_file = gr.File(label="結果の Zip ファイルをダウンロード", file_types=[".zip"])
-    
-    # 注意：Inputs改为 input_files (list)，Outputs保持两个：summary + zip_file
-    run_btn.click(fn=run_interface, inputs=[input_files, model_selection, selected_types], outputs=[output_message, output_file])
-
-demo.launch()
+                cell = new_sheet.cell(row=excel_row, column=start_col + 2)
+                cell.value = kaizen_val
+                cell.font = data_font
+                cell.alignment = data_alignment
+                cell.fill = data_fill
 
