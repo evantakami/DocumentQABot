@@ -160,3 +160,33 @@ def safe_to_excel(val):
                 cell.alignment = data_alignment
                 cell.fill = data_fill
 
+# MODIFY START: 使用 Streamlit 构建界面
+try:
+    df_check = pd.read_csv("check_list.csv", encoding="utf-8-sig")
+    types_options = df_check["種別"].dropna().unique().tolist()
+except Exception as e:
+    logging.error(f"チェックリストの読み込みに失敗しました: {e}")
+    types_options = []
+
+st.title("AI 手順書チェックツール (複数ファイル対応版)")
+
+st.markdown("### Excel ファイルをまとめてアップロード")
+uploaded_files = st.file_uploader("上传Excel文件", type=["xlsx", "xlsm"], accept_multiple_files=True)
+
+st.markdown("### モデル選択")
+model_selection = st.radio("モデル選択", options=["GPT3.5", "4omini"], index=1)
+
+st.markdown("### チェック項目の種別選択 (空欄なら全て対象)")
+selected_types = st.multiselect("選択してください", options=types_options)
+
+if st.button("処理開始"):
+    if not uploaded_files:
+        st.error("请先上传至少一个Excel文件")
+    else:
+        with st.spinner("处理中，请稍候..."):
+            summary, zip_file = run_interface(uploaded_files, model_selection, selected_types)
+        st.text_area("処理情報", value=summary, height=200)
+        if zip_file and os.path.exists(zip_file):
+            with open(zip_file, "rb") as f:
+                st.download_button("结果的 Zip 文件下载", data=f.read(), file_name=zip_file)
+# MODIFY END
